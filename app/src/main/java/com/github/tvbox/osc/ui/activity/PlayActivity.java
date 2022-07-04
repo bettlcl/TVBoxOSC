@@ -14,6 +14,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -32,10 +34,12 @@ import androidx.annotation.Nullable;
 import androidx.lifecycle.Observer;
 import androidx.lifecycle.ViewModelProvider;
 
+import com.github.catvod.crawler.Spider;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.base.BaseActivity;
 import com.github.tvbox.osc.bean.ParseBean;
+import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.bean.VodInfo;
 import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.event.RefreshEvent;
@@ -57,6 +61,7 @@ import com.orhanobut.hawk.Hawk;
 import org.greenrobot.eventbus.EventBus;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.xwalk.core.XWalkJavascriptResult;
 import org.xwalk.core.XWalkResourceClient;
 import org.xwalk.core.XWalkSettings;
 import org.xwalk.core.XWalkUIClient;
@@ -118,7 +123,7 @@ public class PlayActivity extends BaseActivity {
         mController.setCanChangePosition(true);
         mController.setEnableInNormal(true);
         mController.setGestureEnabled(true);
-        mVideoView.setProgressManager(new ProgressManager() {
+        ProgressManager progressManager = new ProgressManager() {
             @Override
             public void saveProgress(String url, long progress) {
                 CacheManager.save(MD5.string2MD5(url), progress);
@@ -141,11 +146,15 @@ public class PlayActivity extends BaseActivity {
                     return skip;
                 return rec;
             }
-        });
+        };
+        mVideoView.setProgressManager(progressManager);
         mController.setListener(new VodController.VodControlListener() {
             @Override
-            public void playNext() {
+            public void playNext(boolean rmProgress) {
+                String preProgressKey = progressKey;
                 PlayActivity.this.playNext();
+                if (rmProgress && preProgressKey != null)
+                    CacheManager.delete(MD5.string2MD5(preProgressKey), 0);
             }
 
             @Override
@@ -284,6 +293,7 @@ public class PlayActivity extends BaseActivity {
             Bundle bundle = intent.getExtras();
             mVodInfo = (VodInfo) bundle.getSerializable("VodInfo");
             sourceKey = bundle.getString("sourceKey");
+            sourceBean = ApiConfig.get().getSource(sourceKey);
             initPlayerCfg();
             play();
         }
@@ -372,6 +382,7 @@ public class PlayActivity extends BaseActivity {
     private VodInfo mVodInfo;
     private JSONObject mVodPlayerCfg;
     private String sourceKey;
+    private SourceBean sourceBean;
 
     private void playNext() {
         boolean hasNext = true;
@@ -510,7 +521,7 @@ public class PlayActivity extends BaseActivity {
         if (pb.getType() == 0) {
             setTip("正在嗅探播放地址", true, false);
             mHandler.removeMessages(100);
-            mHandler.sendEmptyMessageDelayed(100, 15 * 1000);
+            mHandler.sendEmptyMessageDelayed(100, 20 * 1000);
             loadWebView(pb.getUrl() + webUrl);
         } else if (pb.getType() == 1) { // json 解析
             setTip("正在解析播放地址", true, false);
@@ -526,7 +537,7 @@ public class PlayActivity extends BaseActivity {
                         reqHeaders.put(key, headerJson.optString(key, ""));
                     }
                 }
-            } catch (JSONException e) {
+            } catch (Throwable e) {
                 e.printStackTrace();
             }
             OkGo.<String>get(pb.getUrl() + webUrl)
@@ -564,7 +575,7 @@ public class PlayActivity extends BaseActivity {
                                     }
                                 }
                                 playUrl(rs.getString("url"), headers);
-                            } catch (JSONException e) {
+                            } catch (Throwable e) {
                                 e.printStackTrace();
                                 errorWithRetry("解析错误", false);
                             }
@@ -779,6 +790,15 @@ public class PlayActivity extends BaseActivity {
         });
     }
 
+    boolean checkVideoFormat(String url) {
+        if (sourceBean.getType() == 3) {
+            Spider sp = ApiConfig.get().getCSP(sourceBean);
+            if (sp != null && sp.manualVideoCheck())
+                return sp.isVideoFormat(url);
+        }
+        return DefaultConfig.isVideoFormat(url);
+    }
+
     class MyWebView extends WebView {
         public MyWebView(@NonNull Context context) {
             super(context);
@@ -868,6 +888,21 @@ public class PlayActivity extends BaseActivity {
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
                 return false;
             }
+
+            @Override
+            public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+                return false;
+            }
+
+            @Override
+            public boolean onJsConfirm(WebView view, String url, String message, JsResult result) {
+                return false;
+            }
+
+            @Override
+            public boolean onJsPrompt(WebView view, String url, String message, String defaultValue, JsPromptResult result) {
+                return false;
+            }
         });
         mSysWebClient = new SysWebClient();
         webView.setWebViewClient(mSysWebClient);
@@ -900,7 +935,7 @@ public class PlayActivity extends BaseActivity {
             }
 
             if (!ad && !loadFound) {
-                if (DefaultConfig.isVideoFormat(url)) {
+                if (checkVideoFormat(url)) {
                     mHandler.removeMessages(100);
                     loadFound = true;
                     if (headers != null && !headers.isEmpty()) {
@@ -1010,6 +1045,21 @@ public class PlayActivity extends BaseActivity {
             public boolean onConsoleMessage(XWalkView view, String message, int lineNumber, String sourceId, ConsoleMessageType messageType) {
                 return false;
             }
+
+            @Override
+            public boolean onJsAlert(XWalkView view, String url, String message, XWalkJavascriptResult result) {
+                return false;
+            }
+
+            @Override
+            public boolean onJsConfirm(XWalkView view, String url, String message, XWalkJavascriptResult result) {
+                return false;
+            }
+
+            @Override
+            public boolean onJsPrompt(XWalkView view, String url, String message, String defaultValue, XWalkJavascriptResult result) {
+                return false;
+            }
         });
         mX5WebClient = new XWalkWebClient(webView);
         webView.setResourceClient(mX5WebClient);
@@ -1056,7 +1106,7 @@ public class PlayActivity extends BaseActivity {
                 ad = loadedUrls.get(url);
             }
             if (!ad && !loadFound) {
-                if (DefaultConfig.isVideoFormat(url)) {
+                if (checkVideoFormat(url)) {
                     mHandler.removeMessages(100);
                     loadFound = true;
                     HashMap<String, String> webHeaders = new HashMap<>();
